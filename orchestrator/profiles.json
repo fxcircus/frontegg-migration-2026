@@ -1,0 +1,47 @@
+{
+  "_comment": "Named run profiles for the migration orchestrator. Each profile defines which MIGRATE_* steps run and which DELETE_* steps run. Credentials/secrets stay in .env; behavior toggles live here. Resolution order at runtime is: defaults (all false) < selected profile < --set CLI overrides.",
+  "profiles": {
+    "full-migration": {
+      "description": "End-to-end migration of all supported account configuration (no deletions).",
+      "migrate": {
+        "MIGRATE_TENANTS": true,
+        "MIGRATE_CATEGORIES": true,
+        "MIGRATE_PERMISSIONS": true,
+        "MIGRATE_ROLES": true,
+        "MIGRATE_APPLICATIONS": true,
+        "MIGRATE_SECURITY_RULES": true,
+        "MIGRATE_EMAIL_TEMPLATES": true,
+        "MIGRATE_EMAIL_SENDER": true,
+        "MIGRATE_PREHOOKS": true,
+        "MIGRATE_ALLOWED_ORIGINS": true,
+        "MIGRATE_REDIRECT_URIS": true,
+        "MIGRATE_JWT_SETTINGS": true,
+        "MIGRATE_SSO_CONFIGURATIONS": true,
+        "MIGRATE_ENTITLEMENTS": true,
+        "MIGRATE_API_ACCESS_CONTROL": true
+      },
+      "delete": {}
+    },
+    "roles-only": {
+      "description": "Migrate categories, permissions, and roles only.",
+      "migrate": {
+        "MIGRATE_CATEGORIES": true,
+        "MIGRATE_PERMISSIONS": true,
+        "MIGRATE_ROLES": true
+      },
+      "delete": {}
+    },
+    "delete-cleanup": {
+      "description": "DESTRUCTIVE: delete data from the destination account. No migration runs.",
+      "migrate": {},
+      "delete": {
+        "DELETE_TENANTS": true,
+        "DELETE_USERS": true,
+        "DELETE_PERMISSIONS": true,
+        "DELETE_ROLES": true,
+        "DELETE_APPLICATIONS": true,
+        "DELETE_PREHOOKS": true
+      }
+    }
+  }
+}

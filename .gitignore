@@ -1,0 +1,30 @@
+# Local environment files
+.env
+.env.local
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and local output
+*.log
+*.tmp
+
+# csv files
+*.csv
