@@ -42,6 +42,13 @@ class FronteggClient:
             log_error(f"Authentication error: {str(e)}")
             raise
 
+    def ensure_token(self):
+        """Re-authenticate if the token is missing or about to expire; return the current token."""
+        if not self.token or not self.token_expiry or datetime.utcnow() >= self.token_expiry:
+            log_warning("Token expired or missing, re-authenticating...")
+            self.authenticate()
+        return self.token
+
     def request(self, method, endpoint, data=None):
         """Make an API request, refreshing the token if needed."""
         if not self.token or datetime.utcnow() >= self.token_expiry:

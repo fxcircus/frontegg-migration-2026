@@ -37,9 +37,26 @@ def enforce_rate_limit(endpoint):
     # Update the last request time for this endpoint
     last_request_times[endpoint] = time.time()
 
+def _refresh_auth_header(client, headers):
+    """Re-authenticate if the client's token expired and sync the Authorization header.
+
+    Long migrations outlive the initial vendor token; callers build header dicts
+    once and reuse them across loops, so the refreshed token must be written back
+    into the same dict. Clients without ensure_token (e.g. test doubles) are left alone.
+    """
+    ensure = getattr(client, "ensure_token", None)
+    if not callable(ensure):
+        return
+    token = ensure()
+    if headers:
+        for key in headers:
+            if key.lower() == "authorization":
+                headers[key] = f"Bearer {token}"
+
 def make_request_with_rate_limiting(method, url, client, headers=None, params=None, json_data=None):
     """Handle rate-limited requests."""
     enforce_rate_limit(url)
+    _refresh_auth_header(client, headers)
     try:
         response = client.session.request(method, url, headers=headers, params=params, json=json_data)
         if response.status_code == 429:

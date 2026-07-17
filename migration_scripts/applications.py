@@ -2,7 +2,7 @@ import json
 import time
 from datetime import datetime
 from utility.logger import get_logger, log_success, log_error, log_warning, log_subsection
-from migration_scripts.tenants import get_tenants
+from migration_scripts.tenants import get_tenants, _refresh_auth_header
 
 # Rate limit configuration
 DEFAULT_RATE_LIMIT = 30
@@ -39,6 +39,7 @@ def enforce_rate_limit(endpoint, rate_limit=DEFAULT_RATE_LIMIT):
 def make_request_with_rate_limiting(method, url, client, headers=None, params=None, json_data=None):
     """Handle rate-limited requests."""
     enforce_rate_limit(url)
+    _refresh_auth_header(client, headers)
     try:
         response = client.session.request(method, url, headers=headers, params=params, json=json_data)
         if response.status_code == 429:

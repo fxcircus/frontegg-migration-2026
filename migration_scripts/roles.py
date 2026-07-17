@@ -100,10 +100,15 @@ def create_roles(client, roles_with_tenant, roles_without_tenant):
 
         except requests.exceptions.HTTPError as e:
             log(f"Error creating roles without tenantId: {e}")
-            if e.response:
-                error_content = e.response.json()
+            if e.response is not None:
+                try:
+                    error_content = e.response.json()
+                except ValueError:
+                    log(f"Error response content:\n{e.response.text}")
+                    raise
                 log(f"Error response content:\n{json.dumps(error_content, indent=2)}")
-                if any("already exist" in error.lower() for error in error_content.get('errors', [])):
+                errors = error_content.get('errors', []) if isinstance(error_content, dict) else []
+                if any("already exist" in str(error).lower() for error in errors):
                     log("Some roles already exist. Skipping those.")
                 else:
                     raise
@@ -135,10 +140,15 @@ def create_roles(client, roles_with_tenant, roles_without_tenant):
 
         except requests.exceptions.HTTPError as e:
             log(f"Error creating role '{role['name']}' with tenantId: {e}")
-            if e.response:
-                error_content = e.response.json()
+            if e.response is not None:
+                try:
+                    error_content = e.response.json()
+                except ValueError:
+                    log(f"Error response content:\n{e.response.text}")
+                    raise
                 log(f"Error response content for role '{role['name']}' with tenantId '{role['tenantId']}':\n{json.dumps(error_content, indent=2)}")
-                if any("already exist" in error.lower() for error in error_content.get('errors', [])):
+                errors = error_content.get('errors', []) if isinstance(error_content, dict) else []
+                if any("already exist" in str(error).lower() for error in errors):
                     log("Role already exists. Skipping.")
                 else:
                     raise
@@ -190,9 +200,11 @@ def assign_permissions_to_roles(client, roles, role_id_mapping, dest_permissions
                 log(f"Permissions assigned to role '{role['name']}' (ID: {dest_role_id}) with status: {response.status_code}")
             except requests.exceptions.HTTPError as e:
                 log(f"Error assigning permissions to role '{role['name']}' (ID: {dest_role_id}): {e}")
-                if e.response:
-                    error_content = e.response.json()
-                    log(f"Error response content:\n{json.dumps(error_content, indent=2)}")
+                if e.response is not None:
+                    try:
+                        log(f"Error response content:\n{json.dumps(e.response.json(), indent=2)}")
+                    except ValueError:
+                        log(f"Error response content:\n{e.response.text}")
                 else:
                     raise
             except Exception as e:
