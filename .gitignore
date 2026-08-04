@@ -26,5 +26,8 @@ dist/
 *.log
 *.tmp
 
-# csv files
+# csv files — includes the migrated API token handover files, which contain
+# plaintext client secrets that are shown by the API exactly once.
 *.csv
+migrated_tenant_api_tokens.csv
+migrated_user_api_tokens.csv

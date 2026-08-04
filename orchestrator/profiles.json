@@ -18,7 +18,32 @@
         "MIGRATE_JWT_SETTINGS": true,
         "MIGRATE_SSO_CONFIGURATIONS": true,
         "MIGRATE_ENTITLEMENTS": true,
-        "MIGRATE_API_ACCESS_CONTROL": true
+        "MIGRATE_API_ACCESS_CONTROL": true,
+        "MIGRATE_TENANT_HIERARCHY": true
+      },
+      "delete": {}
+    },
+    "post-user-migration": {
+      "description": "Run AFTER Frontegg Support has migrated your users: adds each user's remaining tenant memberships with their per-tenant roles, then recreates tenant and user API tokens (with NEW clientId/secret).",
+      "migrate": {
+        "MIGRATE_USER_TENANT_ROLES": true,
+        "MIGRATE_TENANT_API_TOKENS": true,
+        "MIGRATE_USER_API_TOKENS": true
+      },
+      "delete": {}
+    },
+    "user-tenant-roles-only": {
+      "description": "Add missing user tenant memberships and per-tenant roles only. Safe to re-run.",
+      "migrate": {
+        "MIGRATE_USER_TENANT_ROLES": true
+      },
+      "delete": {}
+    },
+    "api-tokens-only": {
+      "description": "Recreate tenant and user API tokens only. Tokens get NEW clientId/secret values, written to CSV.",
+      "migrate": {
+        "MIGRATE_TENANT_API_TOKENS": true,
+        "MIGRATE_USER_API_TOKENS": true
       },
       "delete": {}
     },

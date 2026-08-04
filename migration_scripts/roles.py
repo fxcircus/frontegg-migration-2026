@@ -215,6 +215,36 @@ def assign_permissions_to_roles(client, roles, role_id_mapping, dest_permissions
 
     log("Permissions assignment to roles completed.")
 
+def backfill_role_mapping(destination_client, source_roles, role_id_mapping):
+    """Fill in destination role IDs that creation did not report.
+
+    create_roles only records roles it actually created. When a batch comes back
+    with "already exist" it is logged and swallowed, so those roles never enter
+    the mapping and assign_permissions_to_roles silently skips them. Re-read the
+    destination's live roles and match on (key, tenant scope) — role IDs are
+    generated per environment and are never portable across accounts.
+    """
+    missing = [r for r in source_roles if r.get('id') not in role_id_mapping]
+    if not missing:
+        return role_id_mapping
+
+    log(f"Backfilling destination IDs for {len(missing)} role(s) not returned by creation.")
+    dest_with_tenant, dest_without_tenant = get_roles(destination_client)
+    dest_by_scope_key = {}
+    for role in (dest_with_tenant + dest_without_tenant):
+        dest_by_scope_key.setdefault((role.get('key'), role.get('tenantId') or None), role['id'])
+
+    for role in missing:
+        scope_key = (role.get('key'), role.get('tenantId') or None)
+        dest_id = dest_by_scope_key.get(scope_key)
+        if dest_id:
+            role_id_mapping[role['id']] = dest_id
+        else:
+            log(f"No destination role found for key '{role.get('key')}' in scope "
+                f"'{role.get('tenantId') or 'global'}'. Permissions will not be assigned.")
+    return role_id_mapping
+
+
 def migrate_roles(source_client, destination_client):
     log("Starting roles migration")
     # Get roles from source and destination (split by tenant)
@@ -270,6 +300,7 @@ def migrate_roles(source_client, destination_client):
         unique_roles_without_tenant = [role for role in unique_roles_list if not role.get('tenantId')]
         # Create only the new (filtered) roles in the destination
         role_id_mapping = create_roles(destination_client, unique_roles_with_tenant, unique_roles_without_tenant)
+        role_id_mapping = backfill_role_mapping(destination_client, unique_roles_list, role_id_mapping)
         assign_permissions_to_roles(destination_client, unique_roles_list, role_id_mapping, dest_permissions_by_key)
     else:
         log("No new roles to create after filtering out existing roles.")

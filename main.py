@@ -15,6 +15,10 @@ from migration_scripts.jwt_settings import migrate_jwt_settings
 from migration_scripts.sso_configurations import migrate_sso_configurations
 from migration_scripts.entitlements import migrate_entitlements
 from migration_scripts.api_access_control import migrate_api_access_control
+from migration_scripts.tenant_hierarchy import migrate_tenant_hierarchy
+from migration_scripts.user_tenant_roles import migrate_user_tenant_roles
+from migration_scripts.tenant_api_tokens import migrate_tenant_api_tokens
+from migration_scripts.user_api_tokens import migrate_user_api_tokens
 
 # Load environment variables
 load_dotenv()
@@ -35,6 +39,10 @@ MIGRATE_JWT_SETTINGS = os.getenv("MIGRATE_JWT_SETTINGS", "False").lower() == "tr
 MIGRATE_SSO_CONFIGURATIONS = os.getenv("MIGRATE_SSO_CONFIGURATIONS", "False").lower() == "true"
 MIGRATE_ENTITLEMENTS = os.getenv("MIGRATE_ENTITLEMENTS", "False").lower() == "true"
 MIGRATE_API_ACCESS_CONTROL = os.getenv("MIGRATE_API_ACCESS_CONTROL", "False").lower() == "true"
+MIGRATE_TENANT_HIERARCHY = os.getenv("MIGRATE_TENANT_HIERARCHY", "False").lower() == "true"
+MIGRATE_USER_TENANT_ROLES = os.getenv("MIGRATE_USER_TENANT_ROLES", "False").lower() == "true"
+MIGRATE_TENANT_API_TOKENS = os.getenv("MIGRATE_TENANT_API_TOKENS", "False").lower() == "true"
+MIGRATE_USER_API_TOKENS = os.getenv("MIGRATE_USER_API_TOKENS", "False").lower() == "true"
 
 def main():
     logger = get_logger()
@@ -78,12 +86,24 @@ def main():
             migration_tasks.append("Entitlements")
         if MIGRATE_API_ACCESS_CONTROL:
             migration_tasks.append("API Access Control")
-        
+        if MIGRATE_TENANT_HIERARCHY:
+            migration_tasks.append("Tenant Hierarchy")
+        if MIGRATE_USER_TENANT_ROLES:
+            migration_tasks.append("User Tenant Memberships & Roles")
+        if MIGRATE_TENANT_API_TOKENS:
+            migration_tasks.append("Tenant API Tokens")
+        if MIGRATE_USER_API_TOKENS:
+            migration_tasks.append("User API Tokens")
+
         logger.print_summary(migration_tasks, "Scheduled Migration Tasks")
         
         if MIGRATE_TENANTS:
             log_section("Tenant Migration")
             migrate_tenants(frontegg_client_1, frontegg_client_2)
+
+        # Hierarchy links tenants that already exist, so it must follow tenants.
+        if MIGRATE_TENANT_HIERARCHY:
+            migrate_tenant_hierarchy(frontegg_client_1, frontegg_client_2)
 
         if MIGRATE_SSO_CONFIGURATIONS:
             log_section("SSO Configurations Migration")
@@ -131,7 +151,20 @@ def main():
         
         if MIGRATE_JWT_SETTINGS:
             migrate_jwt_settings(frontegg_client_1, frontegg_client_2)
-        
+
+        # These depend on roles (for ID mapping) and on users already existing in
+        # the destination, so they run last.
+        if MIGRATE_USER_TENANT_ROLES:
+            migrate_user_tenant_roles(frontegg_client_1, frontegg_client_2)
+
+        if MIGRATE_TENANT_API_TOKENS:
+            migrate_tenant_api_tokens(frontegg_client_1, frontegg_client_2)
+
+        # User tokens inherit the user's roles on the tenant, so this follows the
+        # membership migration above.
+        if MIGRATE_USER_API_TOKENS:
+            migrate_user_api_tokens(frontegg_client_1, frontegg_client_2)
+
         log_success("🎉 Migration process completed successfully!")
         
     else:
