@@ -3,8 +3,16 @@
 Migrates configuration from one Frontegg account (source) to another
 (destination) using the Frontegg API: tenants, tenant hierarchy, roles &
 permissions, applications, security rules, email configuration, prehooks,
-allowed origins, redirect URIs, JWT settings, SSO configurations, entitlements,
-API access control, user tenant memberships & roles, and API tokens.
+allowed origins, redirect URIs, JWT settings, auth/security policies (MFA
+enforcement incl. per-tenant forced MFA, MFA methods, lockout, password
+complexity/history, captcha, session management), SSO configurations,
+entitlements, API access control, user groups, user tenant memberships &
+roles, user attributes (lock state, phone, metadata), cutover-delta users, and
+API tokens. A read-only `verify_migration.py` reconciles the two accounts and
+reports every difference.
+
+**The source account is never written to.** The source client is opened
+read-only and its HTTP session refuses every mutating request.
 
 > **Migrating users?** User records themselves — including password hashes and
 > MFA secrets — are migrated by the Frontegg team, because those secrets cannot
@@ -109,19 +117,27 @@ Built-in profiles:
 
 | Profile | Purpose |
 |---------|---------|
-| `full-migration` | Migrate all supported configuration, including tenant hierarchy (no deletions) |
-| `post-user-migration` | Run **after** Support migrates your users: tenant memberships, per-tenant roles, and API tokens |
+| `full-migration` | Migrate all supported configuration, including tenant hierarchy and auth policies (no deletions) |
+| `post-user-migration` | Run **after** Support migrates your users: tenant memberships, per-tenant roles, groups, user attributes, and API tokens |
+| `cutover-delta` | At cutover: create users added since the export (no passwords — see §11), then their memberships, groups, and attributes |
 | `user-tenant-roles-only` | Only the missing user tenant memberships and their roles |
+| `groups-only` | Only user groups (definitions, group roles, members) |
+| `user-attributes-only` | Only user attributes (lock state, phone, metadata) |
+| `auth-policies-only` | Only auth/security policies (MFA, lockout, password, captcha, sessions) |
 | `api-tokens-only` | Only tenant and user API tokens |
 | `roles-only` | Categories, permissions, and roles only |
 | `delete-cleanup` | **DESTRUCTIVE** — delete data from the destination account |
 
-The migration splits into two phases because of the user dependency:
+The migration splits into phases because of the user dependency:
 
 ```
   1. python3 orchestrator/run.py --profile full-migration
   2. Frontegg Support migrates your users
   3. python3 orchestrator/run.py --profile post-user-migration
+  4. python3 verify_migration.py            # read-only reconciliation report
+  5. (at cutover) python3 orchestrator/run.py --profile cutover-delta
+     ...or ask Support for a delta user migration, then re-run step 3
+  6. python3 verify_migration.py            # confirm nothing is left behind
 ```
 
 Override individual flags on top of a profile (repeatable):
@@ -157,9 +173,15 @@ MIGRATE_SSO_CONFIGURATIONS=true
 MIGRATE_ENTITLEMENTS=true
 MIGRATE_API_ACCESS_CONTROL=true
 MIGRATE_TENANT_HIERARCHY=true
+MIGRATE_AUTH_POLICIES=true
+
+# OPT-IN cutover delta: creates source-only users WITHOUT passwords (see §11):
+MIGRATE_MISSING_USERS=false
 
 # Require the users to already exist in the destination account:
 MIGRATE_USER_TENANT_ROLES=true
+MIGRATE_GROUPS=true
+MIGRATE_USER_ATTRIBUTES=true
 MIGRATE_TENANT_API_TOKENS=true
 MIGRATE_USER_API_TOKENS=true
 ```
@@ -238,6 +260,9 @@ Deletion flags: `DELETE_TENANTS`, `DELETE_USERS`, `DELETE_PERMISSIONS`,
 - Roles (account-level and tenant-scoped, including same key across tenants)
 - Applications (app creation, default app handling, tenant/user assignments)
 - Security Rules
+- **Auth/security policies** — MFA enforcement (incl. **per-tenant forced
+  MFA**), MFA method config, lockout, password complexity & history, captcha,
+  session management (idle/absolute timeout, concurrent sessions) — see §10
 - Email provider/sender configuration and email templates
 - Prehooks
 - Allowed Origins
@@ -246,14 +271,19 @@ Deletion flags: `DELETE_TENANTS`, `DELETE_USERS`, `DELETE_PERMISSIONS`,
 - SSO configurations (roles/groups/domains/domain config)
 - Entitlements: features, plans, plan-feature links, assignments, feature flags
 - API access control routes
+- **User groups** — definitions, group roles, group members (see §12)
 - **User tenant memberships and their per-tenant roles** (requires the users to
   exist in the destination first — see §8)
+- **User attributes** — lock state, phone number, metadata, vendor metadata,
+  external ID, name (see §13)
+- **Cutover-delta users** (opt-in, without passwords/MFA secrets — see §11)
 - **Tenant API tokens** and **user API tokens** — recreated with **new**
   clientId/secret (see §9)
 
 **Migrated by Frontegg Support (contact us):**
-- Users (including password hashes and MFA phone numbers)
-- Groups
+- Users' secret material: password hashes, MFA secrets/enrollment
+  (user records themselves can be created by this tool at cutover — minus that
+  secret material — see §11; Support's migration remains the lossless route)
 
 **Not migrated:**
 - Builder settings
@@ -262,7 +292,8 @@ Deletion flags: `DELETE_TENANTS`, `DELETE_USERS`, `DELETE_PERMISSIONS`,
 - Flows
 - Integrations (except email provider)
 - Audit trail
-- Other environment settings
+- Early-access feature enrollment and other portal-internal settings (not
+  exposed by the public API — ask Frontegg which EA flags are on per tenant)
 
 ---
 
@@ -341,7 +372,118 @@ is why `MIGRATE_USER_API_TOKENS` is off by default.
 
 ---
 
-## 10. Troubleshooting
+## 10. Auth & security policies
+
+`MIGRATE_AUTH_POLICIES` migrates the policies under **Authentication** in the
+portal, none of which any other step touches:
+
+| Policy | What moves |
+|--------|-----------|
+| MFA policy | `enforceMFAType` (**forced MFA**), remember-device, device expiration |
+| MFA methods | Authenticator app / SMS / email settings |
+| Lockout policy | enabled, max attempts |
+| Password | complexity rules, passphrases, pwned-password blocking |
+| Password history | enabled, history size |
+| Captcha | site/secret keys, min score, ignored emails (skipped when keys unset) |
+| Sessions | idle timeout, absolute timeout, concurrent-session limit |
+
+**Per-tenant overrides.** MFA, lockout, and session policies can be overridden
+per tenant (this is how "forced MFA for tenant X" is configured). Frontegg has
+no list-overrides endpoint, so the step reads each source tenant's *effective*
+policy and treats "differs from the environment default" as an override, then
+replays it onto the same tenant in the destination. Costs ~3 GETs per source
+tenant; disable with `AUTH_POLICIES_TENANT_OVERRIDES=false`.
+
+Idempotent: each policy is compared (server fields stripped) and written only
+when it differs.
+
+---
+
+## 11. Cutover delta — users created after the export
+
+Users import is a snapshot: anyone who signed up in the source **after**
+Frontegg Support's export does not exist in the destination. Two ways to close
+that gap at cutover:
+
+1. **Lossless (recommended for password users):** ask Frontegg Support for a
+   delta user migration, then re-run `post-user-migration`.
+2. **Self-serve:** `MIGRATE_MISSING_USERS` (profile `cutover-delta`) creates
+   every source-only user through the data-migration endpoint, carrying email,
+   name, phone, metadata, external ID, provider, verified state, and the
+   primary tenant's roles. **Passwords and MFA secrets cannot be read through
+   the public API**, so these users arrive without them: they must reset their
+   password on first login (SSO/passwordless users are unaffected). Created
+   users are listed in `migrated_missing_users.csv`.
+
+Either way, run `verify_migration.py` first — its **users** section lists
+exactly who is missing, newest first (`--since <ISO date>` narrows it to users
+created after your export date).
+
+The remaining tenant memberships of a delta user are filled in by
+`MIGRATE_USER_TENANT_ROLES`, which runs after it in the same profile.
+
+---
+
+## 12. User groups
+
+`MIGRATE_GROUPS` migrates the environment groups configuration and, per
+tenant: group definitions (name, description, color, metadata), group roles
+(translated by role key), and group members (matched by email — users must
+already exist in the destination; anyone missing is reported, never created).
+
+Additive and idempotent: existing groups are topped up with missing roles and
+members; nothing is ever removed. Groups managed outside Frontegg (e.g. SCIM)
+are migrated but flagged, since their manager may recreate them.
+
+---
+
+## 13. User attributes
+
+`MIGRATE_USER_ATTRIBUTES` syncs, for every user that exists on both sides
+(matched by email):
+
+- **Lock state** — users locked in the source are locked in the destination.
+  Users locked *only* in the destination are left locked unless
+  `USER_ATTRIBUTES_UNLOCK=true`.
+- name, phone number, metadata, vendor metadata, external ID — written only
+  when the source value is non-empty and differs; destination data is never
+  blanked.
+- profile picture URL — attempted, but the destination accepts it only when
+  the URL's domain is on its allowed-domains list; rejected pictures are
+  reported.
+
+Reported but **not writable** via the public API: `mfaEnrolled`, `verified`,
+`provider`, `managedBy` (like password hashes and MFA secrets, these move only
+via Frontegg Support).
+
+---
+
+## 14. Verification (read-only)
+
+```bash
+python3 verify_migration.py                 # writes verify_report.json
+python3 verify_migration.py --since 2026-08-01T00:00:00Z   # focus the user delta
+python3 verify_migration.py --tokens --sso  # include per-tenant token/SSO checks (slow)
+```
+
+Compares the two accounts and reports every difference — both clients are
+opened read-only, so it is safe at any time, including production cutover:
+
+- **endpoint parity** — probes ~15 endpoints on both stacks and flags any
+  that answer differently (catches region differences like `users/v2`
+  relations availability)
+- tenants, users (incl. the **cutover-delta list** of source-only users with
+  creation dates), memberships & membership roles (by role key), roles /
+  permissions / categories, groups, applications
+- policies — MFA / lockout / password / captcha / sessions drift
+- opt-in: per-tenant API-token counts (`--tokens`), SSO configs (`--sso`)
+
+Exit code 0 = no differences, 1 = differences found (CI-friendly). Full detail
+lands in the JSON report; secrets are never written to it.
+
+---
+
+## 15. Troubleshooting
 
 - **Authentication failed** — verify `CLIENT_ID_*` / `API_KEY_*` and that the
   `BASE_URL_*` region is correct and has no trailing slash.

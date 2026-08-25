@@ -22,8 +22,9 @@ import os
 
 from utility.logger import (get_logger, log_error, log_section, log_success,
                             log_warning)
-from utility.migration_api import (INTERVAL_BULK_INVITE, build_role_map,
+from utility.migration_api import (INTERVAL_BULK_INVITE, build_role_maps,
                                    get_all_users, index_users_by_email,
+                                   map_role_id, membership_role_objs,
                                    memberships_of, paced_request)
 
 logger = get_logger()
@@ -67,7 +68,9 @@ def migrate_user_tenant_roles(source_client, destination_client):
         log_warning("No users in the source account; nothing to do.")
         return
 
-    role_map, unmapped_roles = build_role_map(source_client, destination_client)
+    role_maps = build_role_maps(source_client, destination_client)
+    role_map, unmapped_roles = role_maps["id_map"], role_maps["unmapped"]
+    dest_by_scope_key = role_maps["dest_by_scope_key"]
     if unmapped_roles:
         log_warning(f"{len(unmapped_roles)} source roles have no destination equivalent "
                     "(run MIGRATE_ROLES first if that is unexpected):")
@@ -90,16 +93,23 @@ def migrate_user_tenant_roles(source_client, destination_client):
             absent_users.append(email)
             continue
 
-        source_memberships = memberships_of(user)
+        source_memberships = membership_role_objs(user)
         dest_memberships = memberships_of(dest_user)
 
-        for tenant_id, source_role_ids in source_memberships.items():
+        for tenant_id, source_roles in source_memberships.items():
             if tenant_id not in dest_tenant_ids:
                 missing_tenants.add(tenant_id)
                 continue
 
-            mapped = [role_map[r] for r in source_role_ids if r in role_map]
-            unmapped_here = [r for r in source_role_ids if r not in role_map]
+            # Translate by (scope, key) from the role objects themselves; fall
+            # back to the id map for stacks whose user listings omit role keys.
+            mapped, unmapped_here = [], []
+            for role in source_roles:
+                dest_id = map_role_id(role, dest_by_scope_key) or role_map.get(role.get("id"))
+                if dest_id:
+                    mapped.append(dest_id)
+                else:
+                    unmapped_here.append(role.get("key") or role.get("id"))
 
             if tenant_id in dest_memberships:
                 # Membership already exists. Report role drift rather than

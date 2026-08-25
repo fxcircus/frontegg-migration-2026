@@ -16,7 +16,11 @@ from migration_scripts.sso_configurations import migrate_sso_configurations
 from migration_scripts.entitlements import migrate_entitlements
 from migration_scripts.api_access_control import migrate_api_access_control
 from migration_scripts.tenant_hierarchy import migrate_tenant_hierarchy
+from migration_scripts.auth_policies import migrate_auth_policies
+from migration_scripts.users_delta import migrate_missing_users
 from migration_scripts.user_tenant_roles import migrate_user_tenant_roles
+from migration_scripts.groups import migrate_groups
+from migration_scripts.user_attributes import migrate_user_attributes
 from migration_scripts.tenant_api_tokens import migrate_tenant_api_tokens
 from migration_scripts.user_api_tokens import migrate_user_api_tokens
 
@@ -40,6 +44,10 @@ MIGRATE_SSO_CONFIGURATIONS = os.getenv("MIGRATE_SSO_CONFIGURATIONS", "False").lo
 MIGRATE_ENTITLEMENTS = os.getenv("MIGRATE_ENTITLEMENTS", "False").lower() == "true"
 MIGRATE_API_ACCESS_CONTROL = os.getenv("MIGRATE_API_ACCESS_CONTROL", "False").lower() == "true"
 MIGRATE_TENANT_HIERARCHY = os.getenv("MIGRATE_TENANT_HIERARCHY", "False").lower() == "true"
+MIGRATE_AUTH_POLICIES = os.getenv("MIGRATE_AUTH_POLICIES", "False").lower() == "true"
+MIGRATE_MISSING_USERS = os.getenv("MIGRATE_MISSING_USERS", "False").lower() == "true"
+MIGRATE_GROUPS = os.getenv("MIGRATE_GROUPS", "False").lower() == "true"
+MIGRATE_USER_ATTRIBUTES = os.getenv("MIGRATE_USER_ATTRIBUTES", "False").lower() == "true"
 MIGRATE_USER_TENANT_ROLES = os.getenv("MIGRATE_USER_TENANT_ROLES", "False").lower() == "true"
 MIGRATE_TENANT_API_TOKENS = os.getenv("MIGRATE_TENANT_API_TOKENS", "False").lower() == "true"
 MIGRATE_USER_API_TOKENS = os.getenv("MIGRATE_USER_API_TOKENS", "False").lower() == "true"
@@ -50,7 +58,9 @@ def main():
     
     # Initialize Frontegg clients with authentication
     logger.subsection("Initializing Frontegg Clients")
-    frontegg_client_1 = FronteggClient(os.getenv("BASE_URL_1"), os.getenv("CLIENT_ID_1"), os.getenv("API_KEY_1"))
+    # The source account is opened read-only: its HTTP session refuses every
+    # mutating request, so no step can ever write to the source environment.
+    frontegg_client_1 = FronteggClient(os.getenv("BASE_URL_1"), os.getenv("CLIENT_ID_1"), os.getenv("API_KEY_1"), read_only=True)
     frontegg_client_2 = FronteggClient(os.getenv("BASE_URL_2"), os.getenv("CLIENT_ID_2"), os.getenv("API_KEY_2"))
 
     # Run migrations based on flags
@@ -88,8 +98,16 @@ def main():
             migration_tasks.append("API Access Control")
         if MIGRATE_TENANT_HIERARCHY:
             migration_tasks.append("Tenant Hierarchy")
+        if MIGRATE_AUTH_POLICIES:
+            migration_tasks.append("Auth Policies (MFA/lockout/password/captcha/sessions)")
+        if MIGRATE_MISSING_USERS:
+            migration_tasks.append("Missing Users (cutover delta)")
         if MIGRATE_USER_TENANT_ROLES:
             migration_tasks.append("User Tenant Memberships & Roles")
+        if MIGRATE_GROUPS:
+            migration_tasks.append("Groups")
+        if MIGRATE_USER_ATTRIBUTES:
+            migration_tasks.append("User Attributes (lock state, phone, metadata)")
         if MIGRATE_TENANT_API_TOKENS:
             migration_tasks.append("Tenant API Tokens")
         if MIGRATE_USER_API_TOKENS:
@@ -152,10 +170,25 @@ def main():
         if MIGRATE_JWT_SETTINGS:
             migrate_jwt_settings(frontegg_client_1, frontegg_client_2)
 
+        if MIGRATE_AUTH_POLICIES:
+            log_section("Auth Policies Migration")
+            migrate_auth_policies(frontegg_client_1, frontegg_client_2)
+
         # These depend on roles (for ID mapping) and on users already existing in
-        # the destination, so they run last.
+        # the destination, so they run last. Delta-user creation runs first so the
+        # membership step can then fill in the rest of their tenant memberships.
+        if MIGRATE_MISSING_USERS:
+            migrate_missing_users(frontegg_client_1, frontegg_client_2)
+
         if MIGRATE_USER_TENANT_ROLES:
             migrate_user_tenant_roles(frontegg_client_1, frontegg_client_2)
+
+        # Groups attach existing users, so they follow the membership migration.
+        if MIGRATE_GROUPS:
+            migrate_groups(frontegg_client_1, frontegg_client_2)
+
+        if MIGRATE_USER_ATTRIBUTES:
+            migrate_user_attributes(frontegg_client_1, frontegg_client_2)
 
         if MIGRATE_TENANT_API_TOKENS:
             migrate_tenant_api_tokens(frontegg_client_1, frontegg_client_2)

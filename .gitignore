@@ -31,3 +31,7 @@ dist/
 *.csv
 migrated_tenant_api_tokens.csv
 migrated_user_api_tokens.csv
+migrated_missing_users.csv
+
+# verification reports (contain user emails)
+verify_report.json

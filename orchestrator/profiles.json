@@ -19,16 +19,50 @@
         "MIGRATE_SSO_CONFIGURATIONS": true,
         "MIGRATE_ENTITLEMENTS": true,
         "MIGRATE_API_ACCESS_CONTROL": true,
-        "MIGRATE_TENANT_HIERARCHY": true
+        "MIGRATE_TENANT_HIERARCHY": true,
+        "MIGRATE_AUTH_POLICIES": true
       },
       "delete": {}
     },
     "post-user-migration": {
-      "description": "Run AFTER Frontegg Support has migrated your users: adds each user's remaining tenant memberships with their per-tenant roles, then recreates tenant and user API tokens (with NEW clientId/secret).",
+      "description": "Run AFTER Frontegg Support has migrated your users: adds each user's remaining tenant memberships with their per-tenant roles, migrates groups and user attributes (lock state, phone, metadata), then recreates tenant and user API tokens (with NEW clientId/secret).",
       "migrate": {
         "MIGRATE_USER_TENANT_ROLES": true,
+        "MIGRATE_GROUPS": true,
+        "MIGRATE_USER_ATTRIBUTES": true,
         "MIGRATE_TENANT_API_TOKENS": true,
         "MIGRATE_USER_API_TOKENS": true
+      },
+      "delete": {}
+    },
+    "cutover-delta": {
+      "description": "Close the cutover gap: create users added in the source since the user export (WITHOUT passwords/MFA secrets - they must reset or use SSO), then fill in their memberships, groups, and attributes.",
+      "migrate": {
+        "MIGRATE_MISSING_USERS": true,
+        "MIGRATE_USER_TENANT_ROLES": true,
+        "MIGRATE_GROUPS": true,
+        "MIGRATE_USER_ATTRIBUTES": true
+      },
+      "delete": {}
+    },
+    "auth-policies-only": {
+      "description": "Migrate authentication/security policies only: MFA policy (incl. forced MFA), MFA methods, lockout, password complexity/history, captcha, session configuration, and per-tenant overrides.",
+      "migrate": {
+        "MIGRATE_AUTH_POLICIES": true
+      },
+      "delete": {}
+    },
+    "groups-only": {
+      "description": "Migrate user groups only (group definitions, group roles, group members). Users must already exist in the destination for member sync.",
+      "migrate": {
+        "MIGRATE_GROUPS": true
+      },
+      "delete": {}
+    },
+    "user-attributes-only": {
+      "description": "Sync user attributes only: lock state, phone number, metadata, external ID. Users must already exist in the destination.",
+      "migrate": {
+        "MIGRATE_USER_ATTRIBUTES": true
       },
       "delete": {}
     },

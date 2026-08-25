@@ -94,12 +94,11 @@ def get_tenants(client):
             )
             response_json = response.json()
         except Exception as e:
-            log_error(f"Error fetching tenants: {e}")
-            if tenants:
-                log_warning(
-                    f"Continuing with partial tenant list ({len(tenants)} tenants) due to pagination error."
-                )
-            return tenants
+            # Fail loudly: every caller uses this list to decide what to create
+            # or skip, so a silently partial list turns one transient error into
+            # missing tenants/memberships/groups downstream.
+            log_error(f"Error fetching tenants (after {len(tenants)} tenants): {e}")
+            raise
 
         items = response_json.get('items', []) if isinstance(response_json, dict) else []
         metadata = response_json.get('_metadata', {}) if isinstance(response_json, dict) else {}

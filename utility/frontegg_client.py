@@ -2,12 +2,31 @@ import requests
 from datetime import datetime, timedelta
 from utility.logger import get_logger, log_success, log_error, log_warning
 
+
+class _ReadOnlySession(requests.Session):
+    """A session that refuses every mutating request.
+
+    Assigned to clients created with read_only=True (the SOURCE account). The
+    only non-GET request allowed through is the vendor authentication call, so
+    no code path — present or future — can write to the source environment.
+    """
+
+    def request(self, method, url, *args, **kwargs):
+        if (method.upper() not in ("GET", "HEAD", "OPTIONS")
+                and not url.rstrip("/").endswith("/auth/vendor")):
+            raise RuntimeError(
+                f"BLOCKED: attempted {method} {url} on a read-only (source) account. "
+                "Migrations only ever write to the destination.")
+        return super().request(method, url, *args, **kwargs)
+
+
 class FronteggClient:
-    def __init__(self, base_url, client_id, secret):
+    def __init__(self, base_url, client_id, secret, read_only=False):
         self.base_url = base_url
         self.client_id = client_id
         self.secret = secret
-        self.session = requests.Session()
+        self.read_only = read_only
+        self.session = _ReadOnlySession() if read_only else requests.Session()
         self.token = None
         self.token_expiry = None
         self.logger = get_logger()
