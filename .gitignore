@@ -35,3 +35,6 @@ migrated_missing_users.csv
 
 # verification reports (contain user emails)
 verify_report.json
+
+# backups of tenant API tokens moved in preserve mode (contain secret hashes)
+tenant_api_token_backups/

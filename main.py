@@ -59,7 +59,10 @@ def main():
     # Initialize Frontegg clients with authentication
     logger.subsection("Initializing Frontegg Clients")
     # The source account is opened read-only: its HTTP session refuses every
-    # mutating request, so no step can ever write to the source environment.
+    # mutating request, so no step can ever write to the source environment
+    # through this client. The one opt-in exception, the same-region tenant API
+    # token move, builds its own narrowly allowlisted source client
+    # (migration_scripts/tenant_api_tokens_preserve.py).
     frontegg_client_1 = FronteggClient(os.getenv("BASE_URL_1"), os.getenv("CLIENT_ID_1"), os.getenv("API_KEY_1"), read_only=True)
     frontegg_client_2 = FronteggClient(os.getenv("BASE_URL_2"), os.getenv("CLIENT_ID_2"), os.getenv("API_KEY_2"))
 

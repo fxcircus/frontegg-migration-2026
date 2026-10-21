@@ -100,6 +100,24 @@ def render_preflight(config):
     else:
         console.print("  [dim](none)[/dim]")
 
+    # The token mode lives in .env, not in profiles, so surface it here.
+    if "MIGRATE_TENANT_API_TOKENS" in migrate_on:
+        mode = os.getenv("TENANT_API_TOKENS_MODE", "recreate").strip().lower() or "recreate"
+        if mode == "preserve":
+            console.print("\n[bold]Tenant API tokens:[/bold] preserve — original clientId + "
+                          "secret (needs the export/import feature flag on both environments)")
+            if os.getenv("TENANT_API_TOKENS_ALLOW_SOURCE_DELETE", "false").lower() == "true":
+                console.print("[bold red]  SOURCE WRITES ALLOWED:[/bold red] same-region tokens "
+                              "will be DELETED from the source and moved to the destination "
+                              "(TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=true).")
+        elif mode == "recreate":
+            console.print("\n[bold]Tenant API tokens:[/bold] recreate — NEW clientId + secret, "
+                          "written to the handover CSV")
+        else:
+            console.print(f"\n[bold red]Tenant API tokens:[/bold red] unknown "
+                          f"TENANT_API_TOKENS_MODE '{mode}' — the step will stop without "
+                          "changes (use recreate or preserve)")
+
     delete_on = cfg.enabled_deletion_steps(config)
     if delete_on:
         console.print(f"\n[bold red]Deletion steps ({len(delete_on)}) — DESTRUCTIVE:[/bold red]")

@@ -1,5 +1,6 @@
 import requests
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 from utility.logger import get_logger, log_success, log_error, log_warning
 
 
@@ -9,11 +10,27 @@ class _ReadOnlySession(requests.Session):
     Assigned to clients created with read_only=True (the SOURCE account). The
     only non-GET request allowed through is the vendor authentication call, so
     no code path — present or future — can write to the source environment.
+
+    `write_allowlist` is a sequence of (METHOD, compiled path regex) exceptions.
+    It is empty for the source client main.py builds. The only caller that
+    passes one is the tenant API token move (TENANT_API_TOKENS_MODE=preserve
+    with TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=true), which builds its own
+    separate source client for exactly that purpose.
     """
+
+    def __init__(self, write_allowlist=()):
+        super().__init__()
+        self.write_allowlist = tuple(write_allowlist)
+
+    def is_allowlisted_write(self, method, url):
+        path = urlparse(url).path
+        return any(method.upper() == allowed and pattern.fullmatch(path)
+                   for allowed, pattern in self.write_allowlist)
 
     def request(self, method, url, *args, **kwargs):
         if (method.upper() not in ("GET", "HEAD", "OPTIONS")
-                and not url.rstrip("/").endswith("/auth/vendor")):
+                and not url.rstrip("/").endswith("/auth/vendor")
+                and not self.is_allowlisted_write(method, url)):
             raise RuntimeError(
                 f"BLOCKED: attempted {method} {url} on a read-only (source) account. "
                 "Migrations only ever write to the destination.")
@@ -21,12 +38,12 @@ class _ReadOnlySession(requests.Session):
 
 
 class FronteggClient:
-    def __init__(self, base_url, client_id, secret, read_only=False):
+    def __init__(self, base_url, client_id, secret, read_only=False, write_allowlist=()):
         self.base_url = base_url
         self.client_id = client_id
         self.secret = secret
         self.read_only = read_only
-        self.session = _ReadOnlySession() if read_only else requests.Session()
+        self.session = _ReadOnlySession(write_allowlist) if read_only else requests.Session()
         self.token = None
         self.token_expiry = None
         self.logger = get_logger()

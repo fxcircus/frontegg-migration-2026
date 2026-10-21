@@ -12,7 +12,11 @@ API tokens. A read-only `verify_migration.py` reconciles the two accounts and
 reports every difference.
 
 **The source account is never written to.** The source client is opened
-read-only and its HTTP session refuses every mutating request.
+read-only and its HTTP session refuses every mutating request. The one
+exception is opt-in: moving tenant API tokens between two environments in the
+same region with their original credentials, which deletes each moved token
+from the source (`TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=true`, see
+[API tokens](#9-api-tokens)).
 
 > **Migrating users?** User records themselves — including password hashes and
 > MFA secrets — are migrated by the Frontegg team, because those secrets cannot
@@ -22,9 +26,16 @@ read-only and its HTTP session refuses every mutating request.
 > **Everything around** the users you can do yourself with this tool. Once the
 > users exist in the destination, the `post-user-migration` profile adds each
 > user's remaining tenant memberships with the roles they held on each tenant,
-> and recreates their API tokens. See
+> and migrates their API tokens. See
 > [User tenant memberships & roles](#8-user-tenant-memberships--roles) and
 > [API tokens](#9-api-tokens).
+
+> **Keeping tenant API token credentials?** By default every migrated tenant
+> API token gets a new clientId and secret. To keep the original ones
+> (`TENANT_API_TOKENS_MODE=preserve`), Frontegg must first enable the feature
+> flag `tenant-api-token-export-import-enabled` on **both** the source and the
+> destination environment. Contact Frontegg Support and we will enable it for
+> you. See [Preserve mode](#preserve-mode-original-credentials).
 
 ---
 
@@ -124,7 +135,7 @@ Built-in profiles:
 | `groups-only` | Only user groups (definitions, group roles, members) |
 | `user-attributes-only` | Only user attributes (lock state, phone, metadata) |
 | `auth-policies-only` | Only auth/security policies (MFA, lockout, password, captcha, sessions) |
-| `api-tokens-only` | Only tenant and user API tokens |
+| `api-tokens-only` | Only tenant and user API tokens (tenant tokens follow `TENANT_API_TOKENS_MODE`, see §9) |
 | `roles-only` | Categories, permissions, and roles only |
 | `delete-cleanup` | **DESTRUCTIVE** — delete data from the destination account |
 
@@ -193,13 +204,23 @@ Optional tuning:
 # Scale/Enterprise. Default pace is one request per 12s; set 6 on Scale+.
 BULK_INVITE_MIN_INTERVAL_SECONDS=12
 
-# Recreate tokens whose expiry has already passed (default false).
+# Migrate tokens whose expiry has already passed (default false).
 MIGRATE_EXPIRED_API_TOKENS=false
 
 # Where new API token credentials are written (created with mode 0600).
 API_TOKENS_OUTPUT_CSV=migrated_tenant_api_tokens.csv
 USER_API_TOKENS_OUTPUT_CSV=migrated_user_api_tokens.csv
+
+# Tenant API tokens: recreate (default, NEW credentials) or preserve (ORIGINAL
+# credentials, needs a Frontegg feature flag). See §9 before changing these.
+TENANT_API_TOKENS_MODE=recreate
+TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=false
+TENANT_API_TOKENS_BACKUP_DIR=tenant_api_token_backups
 ```
+
+These settings live only in `.env`; profiles and `--set` control the
+`MIGRATE_*` / `DELETE_*` flags. The orchestrator's preflight shows which tenant
+API token mode will run.
 
 > **Order matters:** tenants are migrated before roles so that tenant-scoped
 > roles attach to the correct (same-ID) tenant. When migrating tenant-scoped
@@ -277,13 +298,17 @@ Deletion flags: `DELETE_TENANTS`, `DELETE_USERS`, `DELETE_PERMISSIONS`,
 - **User attributes** — lock state, phone number, metadata, vendor metadata,
   external ID, name (see §13)
 - **Cutover-delta users** (opt-in, without passwords/MFA secrets — see §11)
-- **Tenant API tokens** and **user API tokens** — recreated with **new**
-  clientId/secret (see §9)
+- **Tenant API tokens** — recreated with **new** clientId/secret by default, or
+  carried over with their **original** clientId/secret in preserve mode (see §9)
+- **User API tokens** — recreated with **new** clientId/secret (see §9)
 
 **Migrated by Frontegg Support (contact us):**
 - Users' secret material: password hashes, MFA secrets/enrollment
   (user records themselves can be created by this tool at cutover — minus that
   secret material — see §11; Support's migration remains the lossless route)
+- Not a migration, but a prerequisite for keeping tenant API token
+  credentials: Support enables the `tenant-api-token-export-import-enabled`
+  feature flag on both environments (see §9)
 
 **Not migrated:**
 - Builder settings
@@ -339,17 +364,31 @@ Reported but not changed:
 
 ## 9. API tokens
 
-> **New credentials are unavoidable.** Frontegg generates the `clientId` and
-> `secret` server-side and returns the secret exactly once, at creation. No
-> endpoint accepts an existing pair and there is no import route, so every
-> migrated token is new and **every consumer must be re-pointed**.
+**Tenant API tokens** (`MIGRATE_TENANT_API_TOKENS`) can be migrated two ways.
+Choose with `TENANT_API_TOKENS_MODE` in `.env`:
 
-Because the secret cannot be retrieved later, each new token is written to a CSV
-the moment it is created, alongside the source `clientId` it replaces:
+| Mode | Credentials after migration | Requires | Writes to the source? |
+|------|-----------------------------|----------|-----------------------|
+| `recreate` (default) | **New** clientId + secret per token, written to a CSV. Every consumer must switch to them. | Nothing | Never |
+| `preserve` | **Original** clientId + secret. Consumers keep their credentials. | Feature flag `tenant-api-token-export-import-enabled` on **both** environments, enabled by Frontegg Support | Different regions: never. Same region: each token is deleted from the source as it is moved, and only with `TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=true` |
+
+Any other value stops the step without changing anything.
+
+**User API tokens** (`MIGRATE_USER_API_TOKENS`) are always recreated with new
+credentials: there is no way to carry a user token's secret over.
+
+Tokens whose expiry has already passed are skipped in both modes unless
+`MIGRATE_EXPIRED_API_TOKENS=true`.
+
+### Recreate mode (default): new credentials
+
+Frontegg generates the `clientId` and `secret` server-side and returns the
+secret exactly once, at creation, so each new token is written to a CSV the
+moment it is created, alongside the source `clientId` it replaces:
 
 | Flag | Output CSV |
 |------|-----------|
-| `MIGRATE_TENANT_API_TOKENS` | `migrated_tenant_api_tokens.csv` |
+| `MIGRATE_TENANT_API_TOKENS` (recreate mode) | `migrated_tenant_api_tokens.csv` |
 | `MIGRATE_USER_API_TOKENS` | `migrated_user_api_tokens.csv` |
 
 Both files are created with mode `0600` and are git-ignored. Treat them as
@@ -357,8 +396,10 @@ secrets: hand them over securely, then delete your local copy. If a file is lost
 the only recovery is deleting the tokens and creating them again.
 
 **Tenant API tokens** keep their description, metadata, expiry and roles, with
-role IDs remapped to the destination. Tokens whose expiry has already passed are
-skipped unless `MIGRATE_EXPIRED_API_TOKENS=true`.
+role IDs remapped to the destination. Re-runs skip a token when the destination
+tenant already has a token with the same description, when the source token's
+clientId is already in the destination (carried over by preserve mode), or when
+the CSV records a copy that still exists in the destination.
 
 **User API tokens** carry no roles of their own — a user token inherits whatever
 roles the user holds on that tenant — so run `MIGRATE_USER_TENANT_ROLES` first or
@@ -369,6 +410,108 @@ cost one call per tenant. User tokens are worse: the list endpoint requires both
 `frontegg-tenant-id` and `frontegg-user-id`, so discovery costs one call per
 (user, tenant) membership. On a large account that is thousands of calls, which
 is why `MIGRATE_USER_API_TOKENS` is off by default.
+
+### Preserve mode: original credentials
+
+> **Requires a Frontegg feature flag.** Preserve mode uses Frontegg's tenant API
+> token export/import endpoints, which Frontegg enables per environment with the
+> feature flag `tenant-api-token-export-import-enabled`. Contact Frontegg Support
+> to enable it on **both** the source and the destination environment. It can
+> take a few minutes to apply. If it is off on either side, the step stops with
+> an error and changes nothing. It never falls back to recreating tokens.
+>
+> The destination must also allow API tokens and use **Client Credentials** as
+> its machine-to-machine authentication strategy.
+
+The export returns each token with its stored (hashed) secret, and the import
+stores that hash unchanged, so the clientId + secret the customer already holds
+authenticate against the destination. No secret is ever generated, printed, or
+written to a CSV in this mode.
+
+**Order.** Run it after tenants, roles and permissions exist in the destination
+(`full-migration`). It is part of `post-user-migration` and `api-tokens-only`.
+
+What a run does:
+
+1. Exports every tenant API token from both environments.
+2. Skips tokens that are already in the destination (same clientId, so re-runs
+   are safe), expired tokens, **federated** tokens (their clientId is derived from
+   the source environment, so they cannot work anywhere else), tokens whose
+   tenant does not exist in the destination, and tokens the import would reject
+   as malformed. Each skip is logged with its reason.
+3. **Copies** the remaining tokens into the destination, 25 per call. The
+   destination checks each token's tenant, roles and permissions; a token it
+   rejects is logged with the reason and nothing is written for it.
+4. **Moves** tokens that need it (same region only, below).
+
+**Different regions** (e.g. EU → US): tokens are copied, and the source keeps
+working until you delete its tokens. Delete them in the source once consumers
+have switched to the destination.
+
+**Same region** (`BASE_URL_1` equals `BASE_URL_2`): a clientId can exist only
+once per region, so the destination rejects the copy (`409 ER-01244`) while the
+source still holds the token. A token has to be **moved**: deleted from the
+source, then imported into the destination. Recommended flow:
+
+1. Run with `TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=false` (the default). Nothing
+   is deleted. The run lists every token that needs a move. The destination
+   rejects a clientId conflict only after the tenant, role and permission checks
+   pass, so every listed token is known to be importable. Fix anything else the
+   run reports.
+2. Plan the cutover. Each moved token works **nowhere** for a few seconds
+   between the delete and the import, and from then on works only against the
+   destination.
+3. Set `TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=true` and re-run. For each token:
+   - it is backed up to `TENANT_API_TOKENS_BACKUP_DIR` (mode `0600`,
+     git-ignored, **contains the secret hash**),
+   - deleted from the source,
+   - imported into the destination (retried on transient errors),
+   - and, if that import still fails, re-imported into the source unchanged.
+
+   The orchestrator's preflight warns when source deletes are allowed. Delete
+   the backups once the migration is confirmed.
+
+**After migrating**, consumers keep their clientId and secret but must exchange
+them at the **destination** environment's domain
+(`POST https://<destination domain>/identity/resources/auth/v2/api-token`). The
+JWTs they receive are signed with the destination's keys, so anything that
+verifies them must use the destination's keys. Tokens already issued by the
+source are not valid there.
+
+**Good to know:**
+- **Webhooks:** the import does **not** fire `frontegg.tenantApiToken.created`
+  in the destination. Moving a token **does** fire
+  `frontegg.tenantApiToken.deleted` in the source.
+- **private_key_jwt:** public keys registered on a token are not carried over.
+  The secret works in the destination, but re-register the public keys there
+  before relying on `private_key_jwt`.
+- **Roles and permissions** are matched by key. A role key matches account-level
+  roles and roles on the token's own tenant. A key that matches more than one
+  role is rejected (`409 ER-01246`). If a role lands at a different scope than
+  in the source (account-level instead of tenant-scoped, or the reverse), the
+  run warns.
+- The import does not enforce the "API tokens require roles or permissions"
+  setting, so tokens without roles carry over as they are.
+- If the destination tenant already has a token with the same description but
+  a different clientId (for example, one made by an earlier recreate-mode run),
+  the run warns. Delete that copy once consumers use the original credentials.
+- **Pacing:** the export is limited to 10 calls per minute and the import to 100
+  per minute per environment. The step paces itself.
+
+**Restoring a token from a backup.** If a move reports `ROLLBACK FAILED`, the
+token exists in neither environment. Each backup holds the exact import body:
+
+```bash
+# Vendor token for the environment to restore into (source or destination)
+TOKEN=$(curl -s -X POST "$BASE_URL/auth/vendor" -H 'Content-Type: application/json' \
+  -d '{"clientId":"<client id>","secret":"<api key>"}' | jq -r .token)
+
+jq '.importBody' tenant_api_token_backups/<clientId>-<time>.json | \
+  curl -s -X POST "$BASE_URL/identity/resources/tenants/api-tokens/v1/import" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d @-
+```
+
+The response lists `imported: true` per token on success.
 
 ---
 
@@ -476,7 +619,9 @@ opened read-only, so it is safe at any time, including production cutover:
   creation dates), memberships & membership roles (by role key), roles /
   permissions / categories, groups, applications
 - policies — MFA / lockout / password / captcha / sessions drift
-- opt-in: per-tenant API-token counts (`--tokens`), SSO configs (`--sso`)
+- opt-in: per-tenant API tokens (`--tokens`; count and description parity in
+  recreate mode, every source clientId present in the destination when
+  `TENANT_API_TOKENS_MODE=preserve`), SSO configs (`--sso`)
 
 Exit code 0 = no differences, 1 = differences found (CI-friendly). Full detail
 lands in the JSON report; secrets are never written to it.
@@ -510,5 +655,18 @@ lands in the JSON report; secrets are never written to it.
   one parent.
 - **Lost an API token CSV** — the secrets are unrecoverable. Delete the affected
   tokens in the destination and re-run the step to issue new ones.
+- **"Tenant API token export/import is not enabled"** (`403 ER-01247`) — the
+  `tenant-api-token-export-import-enabled` feature flag is off on that
+  environment. Ask Frontegg Support to enable it on both environments, then
+  re-run. If it was just enabled, wait a few minutes. Nothing was changed.
+- **"Api tokens are disabled"** (preserve mode) — API tokens are off in that
+  environment, or the destination's machine-to-machine strategy is not Client
+  Credentials.
+- **Preserve mode lists tokens that "can only be MOVED"** — source and
+  destination share a region. See [Preserve mode](#preserve-mode-original-credentials)
+  for the move flow.
+- **`ER-01245` / `ER-01246`** in preserve mode — a role or permission key is
+  missing in the destination, or matches more than one role there. Run
+  `MIGRATE_ROLES` / `MIGRATE_PERMISSIONS` first, or remove the duplicate key.
 
 Questions or issues? Contact Frontegg Support.

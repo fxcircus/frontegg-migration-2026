@@ -628,13 +628,19 @@ def check_applications(source_client, destination_client):
 # ---------------------------------------------------------------------------
 
 def check_api_tokens(source_client, destination_client, common_tenant_ids):
-    """Per-tenant token count + description parity.
+    """Per-tenant token parity, judged by how TENANT_API_TOKENS_MODE migrated them.
 
-    Recreated tokens have new ids and secrets by design, so count parity and the
-    description set are what matters here. Secrets are never read into the detail.
+    recreate (default): tokens get new ids and secrets by design, so count parity
+    and the description set are what matters.
+    preserve: tokens keep their clientId, so every source clientId must exist in
+    the destination. Same-region moves delete tokens from the source, so extra
+    destination tokens are not drift.
+    Secrets are never read into the detail.
     """
+    preserve = os.getenv("TENANT_API_TOKENS_MODE", "recreate").strip().lower() == "preserve"
     logger.info(f"  Comparing API tokens across {len(common_tenant_ids)} common "
-                "tenants (two GETs per tenant)...")
+                f"tenants (two GETs per tenant, "
+                f"{'preserve' if preserve else 'recreate'} mode)...")
     drift, unavailable = [], []
 
     for tenant_id in common_tenant_ids:
@@ -652,6 +658,16 @@ def check_api_tokens(source_client, destination_client, common_tenant_ids):
             (src_payload or {}).get("items", [])
         dst_tokens = dst_payload if isinstance(dst_payload, list) else \
             (dst_payload or {}).get("items", [])
+        if preserve:
+            dst_ids = {t.get("clientId") for t in dst_tokens}
+            missing = sorted(t.get("clientId") for t in src_tokens
+                             if t.get("clientId") not in dst_ids)
+            if missing:
+                drift.append({"tenantId": tenant_id,
+                              "sourceCount": len(src_tokens),
+                              "destinationCount": len(dst_tokens),
+                              "missingClientIds": missing})
+            continue
         src_desc = sorted((t.get("description") or "") for t in src_tokens)
         dst_desc = sorted((t.get("description") or "") for t in dst_tokens)
         if len(src_tokens) != len(dst_tokens) or src_desc != dst_desc:
@@ -661,12 +677,19 @@ def check_api_tokens(source_client, destination_client, common_tenant_ids):
                           "missingDescriptions":
                               sorted(set(src_desc) - set(dst_desc))})
 
-    if drift:
+    if drift and preserve:
+        log_warning(f"{len(drift)} tenants have source API tokens missing from the "
+                    "destination (expired and federated tokens are skipped by design):")
+        _print_examples(drift, lambda e:
+                        f"{e['tenantId']}: missing clientIds {e['missingClientIds']}")
+    elif drift:
         log_warning(f"{len(drift)} tenants drift on API tokens:")
         _print_examples(drift, lambda e:
                         f"{e['tenantId']}: {e['sourceCount']} -> "
                         f"{e['destinationCount']} tokens, missing descriptions "
                         f"{e['missingDescriptions']}")
+    elif preserve:
+        log_success("Every source API token clientId exists in the destination.")
     else:
         log_success("API token counts and descriptions match on every "
                     "comparable tenant.")
@@ -674,9 +697,10 @@ def check_api_tokens(source_client, destination_client, common_tenant_ids):
         log_warning(f"{len(unavailable)} tenants could not be compared "
                     "(token endpoint non-200 on at least one side).")
 
-    return len(drift), {"drift": drift, "unavailableTenants": unavailable,
-                        "note": "recreated tokens have new ids — count parity "
-                                "is what matters here"}
+    note = ("preserve mode: every source clientId must exist in the destination"
+            if preserve else
+            "recreated tokens have new ids — count parity is what matters here")
+    return len(drift), {"drift": drift, "unavailableTenants": unavailable, "note": note}
 
 
 # ---------------------------------------------------------------------------

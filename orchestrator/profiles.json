@@ -25,7 +25,7 @@
       "delete": {}
     },
     "post-user-migration": {
-      "description": "Run AFTER Frontegg Support has migrated your users: adds each user's remaining tenant memberships with their per-tenant roles, migrates groups and user attributes (lock state, phone, metadata), then recreates tenant and user API tokens (with NEW clientId/secret).",
+      "description": "Run AFTER Frontegg Support has migrated your users: adds each user's remaining tenant memberships with their per-tenant roles, migrates groups and user attributes (lock state, phone, metadata), then migrates tenant API tokens (TENANT_API_TOKENS_MODE: recreate = NEW clientId/secret, preserve = original ones) and recreates user API tokens (NEW clientId/secret).",
       "migrate": {
         "MIGRATE_USER_TENANT_ROLES": true,
         "MIGRATE_GROUPS": true,
@@ -74,7 +74,7 @@
       "delete": {}
     },
     "api-tokens-only": {
-      "description": "Recreate tenant and user API tokens only. Tokens get NEW clientId/secret values, written to CSV.",
+      "description": "Tenant and user API tokens only. Tenant tokens follow TENANT_API_TOKENS_MODE (recreate = NEW clientId/secret written to CSV, preserve = original clientId/secret); user tokens always get NEW clientId/secret, written to CSV.",
       "migrate": {
         "MIGRATE_TENANT_API_TOKENS": true,
         "MIGRATE_USER_API_TOKENS": true

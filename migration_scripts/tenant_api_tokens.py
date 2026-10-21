@@ -1,17 +1,27 @@
 """Migrate tenant API tokens (client-credentials / M2M tokens).
 
-IMPORTANT CAVEAT — credentials cannot be preserved.
-Frontegg generates the clientId and the secret server-side and returns the secret
-exactly once, in the create response. There is no field to supply an existing
-clientId or secret, and no import endpoint anywhere in the public API. Every
-migrated token therefore gets NEW credentials, and every consumer of the old
-token (integrations, scripts, CI jobs) has to be re-pointed.
+TENANT_API_TOKENS_MODE picks how:
 
-Because the secret is unrecoverable after creation, each new token is written to
-a handover CSV the moment it is created, alongside the source clientId it
-replaces so you can tell each customer exactly which credential to swap.
+  recreate (default) - this module. Creates each token anew through the public
+      API, so every token gets a NEW clientId and secret and every consumer of
+      the old token (integrations, scripts, CI jobs) has to be re-pointed. Works
+      on every environment.
+  preserve - tenant_api_tokens_preserve.py. Carries each token over with its
+      ORIGINAL clientId and secret, using export/import endpoints that Frontegg
+      enables per environment (feature flag
+      `tenant-api-token-export-import-enabled`, on BOTH environments). Within one
+      region a token can only be moved, which deletes it from the source; that
+      needs TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=true. See that module.
 
-There is no account-wide listing endpoint, so tokens are enumerated per tenant.
+An unknown mode stops this step before anything is read or written. Preserve
+mode never falls back to recreate.
+
+Recreate mode details: Frontegg generates the clientId and the secret
+server-side and returns the secret exactly once, in the create response, so each
+new token is written to a handover CSV the moment it is created, alongside the
+source clientId it replaces so you can tell each customer exactly which
+credential to swap. There is no account-wide public listing endpoint, so tokens
+are enumerated per tenant.
 """
 
 import csv
@@ -61,10 +71,38 @@ def _minutes_until(expires):
     return minutes if minutes >= 1 else None
 
 
+def _mode():
+    return os.getenv("TENANT_API_TOKENS_MODE", "recreate").strip().lower() or "recreate"
+
+
+def _already_recreated(output_path):
+    """source clientId -> new clientIds that earlier recreate runs issued for it."""
+    recreated = {}
+    if not os.path.exists(output_path):
+        return recreated
+    with open(output_path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("sourceClientId") and row.get("newClientId"):
+                recreated.setdefault(row["sourceClientId"], set()).add(row["newClientId"])
+    return recreated
+
+
 def migrate_tenant_api_tokens(source_client, destination_client):
+    mode = _mode()
+    if mode == "preserve":
+        from migration_scripts.tenant_api_tokens_preserve import \
+            migrate_tenant_api_tokens_preserving
+        return migrate_tenant_api_tokens_preserving(source_client, destination_client)
+    if mode != "recreate":
+        log_section("Tenant API Tokens")
+        log_error(f"Unknown TENANT_API_TOKENS_MODE={mode!r}. Use 'recreate' (new "
+                  "credentials) or 'preserve' (original credentials). Nothing was changed.")
+        return
+
     log_section("Tenant API Tokens")
-    log_warning("Migrated tokens receive NEW clientId and secret values — the originals "
-                "cannot be carried over. Consumers must be re-pointed.")
+    log_warning("Migrated tokens receive NEW clientId and secret values (recreate mode). "
+                "Consumers must be re-pointed. Set TENANT_API_TOKENS_MODE=preserve to keep "
+                "the original credentials instead.")
 
     from migration_scripts.tenants import get_tenants
 
@@ -79,6 +117,7 @@ def migrate_tenant_api_tokens(source_client, destination_client):
 
     output_path = _output_path()
     fresh = not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+    recreated = _already_recreated(output_path)
     created = skipped = failed = 0
     scanned_with_tokens = 0
 
@@ -101,16 +140,24 @@ def migrate_tenant_api_tokens(source_client, destination_client):
             scanned_with_tokens += 1
 
             try:
-                existing = {(t.get("description") or "").strip()
-                            for t in _list_tokens(destination_client, tenant_id)}
+                destination_tokens = _list_tokens(destination_client, tenant_id)
             except Exception as e:
                 log_error(f"  {tenant_id}: could not list destination tokens: {e}")
                 continue
+            existing = {(t.get("description") or "").strip() for t in destination_tokens}
+            existing_ids = {t.get("clientId") for t in destination_tokens}
 
             for token in source_tokens:
                 description = (token.get("description") or "").strip()
                 expires_in = _minutes_until(token.get("expires"))
                 if token.get("expires") and expires_in is None and not include_expired:
+                    skipped += 1
+                    continue
+                # Same clientId in the destination: carried over by preserve mode.
+                # A CSV copy still in the destination: recreated by an earlier run
+                # (the description check below misses tokens without one).
+                source_id = token.get("clientId")
+                if source_id in existing_ids or recreated.get(source_id, set()) & existing_ids:
                     skipped += 1
                     continue
                 if description and description in existing:

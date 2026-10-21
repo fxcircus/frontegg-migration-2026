@@ -57,7 +57,10 @@ def paced_request(client, method, url, headers=None, json_data=None, params=None
     `allow_status` lists non-2xx codes to return instead of raising (e.g. 404
     when probing for an optional resource).
     """
-    if getattr(client, "read_only", False) and method.upper() not in ("GET", "HEAD", "OPTIONS"):
+    allowlisted = getattr(getattr(client, "session", None), "is_allowlisted_write", None)
+    if (getattr(client, "read_only", False)
+            and method.upper() not in ("GET", "HEAD", "OPTIONS")
+            and not (callable(allowlisted) and allowlisted(method, url))):
         raise RuntimeError(
             f"BLOCKED: attempted {method} {url} on a read-only (source) account. "
             "Migrations only ever write to the destination.")
