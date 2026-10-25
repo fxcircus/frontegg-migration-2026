@@ -4,7 +4,19 @@ from urllib.parse import urlparse
 from utility.logger import get_logger, log_success, log_error, log_warning
 
 
-class _ReadOnlySession(requests.Session):
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 60
+
+
+class _TimeoutSession(requests.Session):
+    """A session whose requests always carry a timeout, so a dead socket
+    (for example after a VPN drop) fails instead of hanging forever."""
+
+    def request(self, method, url, *args, **kwargs):
+        kwargs.setdefault("timeout", DEFAULT_REQUEST_TIMEOUT_SECONDS)
+        return super().request(method, url, *args, **kwargs)
+
+
+class _ReadOnlySession(_TimeoutSession):
     """A session that refuses every mutating request.
 
     Assigned to clients created with read_only=True (the SOURCE account). The
@@ -43,7 +55,7 @@ class FronteggClient:
         self.client_id = client_id
         self.secret = secret
         self.read_only = read_only
-        self.session = _ReadOnlySession(write_allowlist) if read_only else requests.Session()
+        self.session = _ReadOnlySession(write_allowlist) if read_only else _TimeoutSession()
         self.token = None
         self.token_expiry = None
         self.logger = get_logger()
