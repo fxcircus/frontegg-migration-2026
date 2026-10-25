@@ -32,6 +32,7 @@ _ID_SEGMENT = re.compile(r"^[0-9a-fA-F][0-9a-fA-F-]{15,}$")
 # Launch-tier values so the defaults are safe on every plan; override per call.
 INTERVAL_BULK_INVITE = 12.0   # 5/min per environment  -> 1 per 12s
 INTERVAL_TENANTS = 2.0        # 30/min per environment -> 1 per 2s
+INTERVAL_USER_LISTING = 2.0   # users/v2 per-tenant listings 429 at ~40/min
 INTERVAL_GENERAL = 0.6        # 100/min per IP         -> 1 per 0.6s
 
 MAX_ATTEMPTS = 5
@@ -128,6 +129,9 @@ def get_all_users(client, tenant_id=None, page_size=200):
     too, but on some stacks its tenants[] entries carry no roles at all, so v2
     is the portable choice; if a stack ever drops v2 we fall back to v3.
     Omitting frontegg-tenant-id scopes the call to the entire environment.
+
+    The account-wide tenants[] is not guaranteed to be complete; pass the
+    result through complete_memberships() before relying on it.
     """
     headers = {}
     if tenant_id:
@@ -141,7 +145,8 @@ def get_all_users(client, tenant_id=None, page_size=200):
         not_found = False
         while True:
             response = paced_request(client, "GET", url, headers=headers,
-                                     params=params, allow_status=(404,))
+                                     params=params, allow_status=(404,),
+                                     min_interval=INTERVAL_USER_LISTING if tenant_id else INTERVAL_GENERAL)
             if response.status_code == 404:
                 not_found = True
                 break
@@ -292,6 +297,64 @@ def membership_role_objs(user):
             continue
         out[tenant_id] = [r for r in (tenant.get("roles") or []) if isinstance(r, dict)]
     return out
+
+
+USER_TENANT_ROLES_PATH = "/identity/resources/users/v3/roles"
+
+
+def get_user_role_ids_on_tenant(client, user_id, tenant_id):
+    """Role ids one user holds on one tenant (/users/v3/roles, tenant-scoped)."""
+    response = paced_request(client, "GET", f"{client.base_url}{USER_TENANT_ROLES_PATH}",
+                             headers={"frontegg-tenant-id": tenant_id},
+                             params={"ids": user_id})
+    for entry in response.json() or []:
+        if entry.get("userId") == user_id:
+            return [role_id for role_id in entry.get("roleIds") or [] if role_id]
+    return []
+
+
+def complete_memberships(client, users, tenant_ids, label="account"):
+    """Fill in the memberships the account-wide user sweep leaves out.
+
+    /users/v2 and /v3 return each user with tenants[]/tenantIds, but that array
+    can omit memberships: seen on an EU account where accepted AND still-pending
+    invitations from older invitation flows were missing from it, while the
+    per-tenant listing (frontegg-tenant-id header) returned them. Comparing two
+    sweeps therefore reports "in sync" for memberships that were never copied.
+
+    This lists every tenant, and for each member missing from the user's
+    tenants[] appends {tenantId, roles[]} with the role objects resolved from
+    /users/v3/roles. Users are updated in place. Costs one listing per tenant
+    plus one call per recovered membership. Returns the number recovered.
+    """
+    users_by_id = {user.get("id"): user for user in users if user.get("id")}
+    roles_by_id = {role.get("id"): role for role in get_all_roles(client) if role.get("id")}
+    recovered, unknown_members = 0, set()
+
+    for tenant_id in tenant_ids:
+        for member in get_all_users(client, tenant_id=tenant_id):
+            user = users_by_id.get(member.get("id"))
+            if user is None:
+                unknown_members.add(member.get("email") or member.get("id"))
+                continue
+            known_tenants = {t.get("tenantId") for t in user.get("tenants") or []}
+            if tenant_id in known_tenants:
+                continue
+            role_ids = get_user_role_ids_on_tenant(client, user["id"], tenant_id)
+            role_objs = [roles_by_id[role_id] for role_id in role_ids if role_id in roles_by_id]
+            user.setdefault("tenants", []).append({"tenantId": tenant_id, "roles": role_objs,
+                                                   "recoveredFromTenantListing": True})
+            if isinstance(user.get("tenantIds"), list) and tenant_id not in user["tenantIds"]:
+                user["tenantIds"].append(tenant_id)
+            recovered += 1
+
+    if recovered:
+        log_warning(f"  {label}: {recovered} memberships were missing from the account-wide "
+                    "user listing and were recovered from the per-tenant listings")
+    if unknown_members:
+        log_warning(f"  {label}: {len(unknown_members)} tenant members are not in the "
+                    "account-wide user listing at all (ignored)")
+    return recovered
 
 
 # Server-generated fields that must never be replayed into a create/update body.

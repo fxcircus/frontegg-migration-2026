@@ -39,7 +39,8 @@ from utility.frontegg_client import FronteggClient
 from utility.logger import (get_logger, log_error, log_section, log_success,
                             log_warning)
 from utility.migration_api import (GLOBAL_SCOPE, INTERVAL_GENERAL, get_all_roles,
-                                   get_all_users, index_users_by_email,
+                                   complete_memberships, get_all_users,
+                                   index_users_by_email,
                                    membership_role_objs, memberships_of,
                                    paced_request, strip_server_fields)
 
@@ -858,6 +859,10 @@ def main(argv=None):
         logger.info("Fetching users from both accounts...")
         source_users = get_all_users(source_client)
         dest_users = get_all_users(destination_client)
+        if not tenants_error:
+            logger.info("Cross-checking memberships against the per-tenant user listings...")
+            complete_memberships(source_client, source_users, sorted(src_ids), "source")
+            complete_memberships(destination_client, dest_users, sorted(dst_ids), "destination")
     except Exception as e:
         users_error = f"could not list users: {e}"
 

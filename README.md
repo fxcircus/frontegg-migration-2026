@@ -334,9 +334,14 @@ reported and skipped — migrate the users first.
 
 How it works:
 
-1. One sweep of `/identity/resources/users/v3` per account returns every user
-   together with a `tenants` array of `{tenantId, roles[]}`, i.e. the entire
-   membership graph.
+1. One sweep of `/identity/resources/users/v2` per account returns every user
+   together with a `tenants` array of `{tenantId, roles[]}`. That array is
+   **not always complete**: memberships created through older invitation
+   flows (accepted or still pending) can be missing from it while the
+   per-tenant user listing returns them. So the step also lists every tenant
+   and adds back any membership found only there, reading its roles from
+   `/identity/resources/users/v3/roles`. One extra call per tenant, plus one
+   per recovered membership; the run reports how many it recovered.
 2. Source role IDs are translated to destination role IDs by matching on
    **(tenant scope, role key)**. Role IDs are generated per environment and are
    never portable; role *names* carry no uniqueness guarantee. Tenants keep their
@@ -616,8 +621,10 @@ opened read-only, so it is safe at any time, including production cutover:
   that answer differently (catches region differences like `users/v2`
   relations availability)
 - tenants, users (incl. the **cutover-delta list** of source-only users with
-  creation dates), memberships & membership roles (by role key), roles /
-  permissions / categories, groups, applications
+  creation dates), memberships & membership roles (by role key, cross-checked
+  against the per-tenant user listings so memberships the account-wide
+  listing omits are still compared), roles / permissions / categories, groups,
+  applications
 - policies — MFA / lockout / password / captcha / sessions drift
 - opt-in: per-tenant API tokens (`--tokens`; count and description parity in
   recreate mode, every source clientId present in the destination when
@@ -628,7 +635,17 @@ lands in the JSON report; secrets are never written to it.
 
 ---
 
-## 15. Troubleshooting
+## 15. Tests
+
+Offline unit tests (no credentials, no network):
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+---
+
+## 16. Troubleshooting
 
 - **Authentication failed** — verify `CLIENT_ID_*` / `API_KEY_*` and that the
   `BASE_URL_*` region is correct and has no trailing slash.

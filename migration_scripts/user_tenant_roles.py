@@ -7,8 +7,11 @@ the gap that remains afterwards: a user who belongs to several accounts (tenants
 in the source but only one in the destination, and the roles they held on each.
 
 How it works:
-  1. One sweep of /identity/resources/users/v3 per account returns every user with
-     a `tenants` array of {tenantId, roles[]}, i.e. the whole membership graph.
+  1. One sweep of /identity/resources/users/v2 per account returns every user with
+     a `tenants` array of {tenantId, roles[]}. That array can omit memberships
+     (accepted and pending invitations alike), so every tenant is also listed
+     on its own and the memberships found only there are added back, with their
+     roles read from /users/v3/roles (see complete_memberships).
   2. Source role IDs are translated to destination role IDs by (tenant scope, key).
   3. Missing memberships are grouped by tenant and sent as one bulk invite per
      tenant, with skipInviteEmail so nobody is emailed.
@@ -23,9 +26,10 @@ import os
 from utility.logger import (get_logger, log_error, log_section, log_success,
                             log_warning)
 from utility.migration_api import (INTERVAL_BULK_INVITE, build_role_maps,
-                                   get_all_users, index_users_by_email,
-                                   map_role_id, membership_role_objs,
-                                   memberships_of, paced_request)
+                                   complete_memberships, get_all_users,
+                                   index_users_by_email, map_role_id,
+                                   membership_role_objs, memberships_of,
+                                   paced_request)
 
 logger = get_logger()
 
@@ -80,6 +84,10 @@ def migrate_user_tenant_roles(source_client, destination_client):
 
     dest_by_email = index_users_by_email(dest_users)
     dest_tenant_ids = _existing_tenant_ids(destination_client)
+
+    logger.info("Cross-checking memberships against the per-tenant user listings...")
+    complete_memberships(source_client, source_users, sorted(_existing_tenant_ids(source_client)), "source")
+    complete_memberships(destination_client, dest_users, sorted(dest_tenant_ids), "destination")
 
     plan = {}
     absent_users, missing_tenants, unmappable, role_drift = [], set(), [], []
