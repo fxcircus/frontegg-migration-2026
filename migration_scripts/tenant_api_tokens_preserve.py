@@ -432,9 +432,15 @@ def migrate_tenant_api_tokens_preserving(source_client, destination_client):
     same_region = (urlparse(source_client.base_url).netloc.lower()
                    == urlparse(destination_client.base_url).netloc.lower())
 
+    from migration_scripts.tenant_api_tokens import scoped_tenant_id
+
+    only_tenant_id = scoped_tenant_id()
+    if only_tenant_id:
+        log_warning(f"Limited to tenant {only_tenant_id} (TENANT_API_TOKENS_TENANT_ID).")
+
     try:
-        source_tokens = export_tokens(source_client, "source")
-        destination_tokens = export_tokens(destination_client, "destination")
+        source_tokens = export_tokens(source_client, "source", only_tenant_id)
+        destination_tokens = export_tokens(destination_client, "destination", only_tenant_id)
     except FeatureFlagOff as e:
         log_error(f"Tenant API token export/import is not enabled on the {e} environment. "
                   f"Ask Frontegg to enable the '{FEATURE_FLAG}' feature flag on BOTH "

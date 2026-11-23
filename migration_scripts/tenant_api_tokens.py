@@ -75,6 +75,10 @@ def _mode():
     return os.getenv("TENANT_API_TOKENS_MODE", "recreate").strip().lower() or "recreate"
 
 
+def scoped_tenant_id():
+    return os.getenv("TENANT_API_TOKENS_TENANT_ID", "").strip() or None
+
+
 def _already_recreated(output_path):
     """source clientId -> new clientIds that earlier recreate runs issued for it."""
     recreated = {}
@@ -111,6 +115,10 @@ def migrate_tenant_api_tokens(source_client, destination_client):
     tenants = get_tenants(source_client) or []
     tenant_ids = [t.get("tenantId") or t.get("id") for t in tenants]
     tenant_ids = [t for t in tenant_ids if t]
+    only_tenant_id = scoped_tenant_id()
+    if only_tenant_id:
+        log_warning(f"Limited to tenant {only_tenant_id} (TENANT_API_TOKENS_TENANT_ID).")
+        tenant_ids = [t for t in tenant_ids if t == only_tenant_id]
     logger.info(f"Scanning {len(tenant_ids)} source tenants for API tokens...")
 
     role_map, _ = build_role_map(source_client, destination_client)

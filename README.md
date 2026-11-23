@@ -216,6 +216,8 @@ USER_API_TOKENS_OUTPUT_CSV=migrated_user_api_tokens.csv
 TENANT_API_TOKENS_MODE=recreate
 TENANT_API_TOKENS_ALLOW_SOURCE_DELETE=false
 TENANT_API_TOKENS_BACKUP_DIR=tenant_api_token_backups
+# Optional: migrate tenant API tokens of this one tenant only (empty = all).
+TENANT_API_TOKENS_TENANT_ID=
 ```
 
 These settings live only in `.env`; profiles and `--set` control the
@@ -384,6 +386,10 @@ credentials: there is no way to carry a user token's secret over.
 
 Tokens whose expiry has already passed are skipped in both modes unless
 `MIGRATE_EXPIRED_API_TOKENS=true`.
+
+To try the tenant token step on one tenant first, set
+`TENANT_API_TOKENS_TENANT_ID=<tenantId>` (both modes). Unset it to migrate the
+rest; tokens already in the destination are skipped on the re-run.
 
 ### Recreate mode (default): new credentials
 

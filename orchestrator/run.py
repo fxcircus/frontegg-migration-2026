@@ -117,6 +117,10 @@ def render_preflight(config):
             console.print(f"\n[bold red]Tenant API tokens:[/bold red] unknown "
                           f"TENANT_API_TOKENS_MODE '{mode}' — the step will stop without "
                           "changes (use recreate or preserve)")
+        only_tenant_id = os.getenv("TENANT_API_TOKENS_TENANT_ID", "").strip()
+        if only_tenant_id:
+            console.print(f"[bold yellow]  Limited to tenant {only_tenant_id}[/bold yellow] "
+                          "(TENANT_API_TOKENS_TENANT_ID)")
 
     delete_on = cfg.enabled_deletion_steps(config)
     if delete_on:
